@@ -207,7 +207,7 @@ def get_model_configs(config):
         num_layers=x_cgm_jepa_metadata["encoder_num_layers"],
         jepa=False # we don't apply jepa training in downstream
     ).to(device)
-    x_cgm_jepa.load_state_dict(torch.load(f"{x_cgm_jepa_dir}/lr_0.0001_ema_momentum_0.997_mask_ratio_{x_cgm_jepa_metadata['mask_ratio']}_encoder_96_6_3_predictor_48_2_1_not_use_time.pt", map_location=device)["cgm_encoder"], strict=True)
+    x_cgm_jepa.load_state_dict(torch.load(f"{x_cgm_jepa_dir}/x_cgm_jepa", map_location=device)["encoder"], strict=True)
 
     # GluFormer
     gluformer_artifact = api.artifact(f'hadamuhammad-unsw/gluformer/gluformer:{gluformer_version}', type="model")
@@ -294,11 +294,11 @@ def get_model_configs(config):
     # TS2Vec (added more baselines)
     from eval.baseline_utils.ts2vec_utils import load_pretrained_ts2vec, TS2VecEncoderWrapper
     ts2vec_artifact = api.artifact(
-        f"hadamuhammad-unsw/cgm-ts2vec-pretrain/cgm-ts2vec:{cgm_ts2vec_version}",
+        f"hadamuhammad-unsw/cgm-ts2vec-pretrain/ts2vec:{cgm_ts2vec_version}",
         type="model",
     )
     ts2vec_dir = ts2vec_artifact.download()
-    checkpoint_path = os.path.join(ts2vec_dir, "cgm-ts2vec.pkl")
+    checkpoint_path = os.path.join(ts2vec_dir, "ts2vec.pkl")
     ts2vec_meta = ts2vec_artifact.metadata or {}
     output_dims = ts2vec_meta.get("output_dims", config.get("ts2vec_output_dims", 96))
     hidden_dims = ts2vec_meta.get("hidden_dims", config.get("ts2vec_hidden_dims", 64))
