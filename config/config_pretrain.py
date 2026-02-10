@@ -54,7 +54,7 @@ config = {
     "gluco_gridsize": 32,  # KDE grid size (32x32)
     
     # Run pre-computation first: python -m utils.precompute_glucodensity --data_path <path> --output_path <cache_path>
-    "gluco_cache_path": "/Users/hadamelino/Desktop/CGM_FM/cgm_jepa/Dataset/gluco_cache.pkl",  # Path to pre-computed glucodensity patches (set to speed up training!)
+    "gluco_cache_path": "",  # Path to pre-computed glucodensity patches (set to speed up training!)
                             
     # TS2Vec pretraining configuration
     "ts2vec_output_dims": 96,  # Representation dimension

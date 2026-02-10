@@ -2,13 +2,14 @@ import pandas as pd
 import torch
 import random
 import numpy as np
+
 import os
 
 from utils.timefeatures import time_features
 from .base_loader.base_loader import CSVDataLoader, JSONDataLoader
 
 class JEPALoader(CSVDataLoader):
-    def __init__(self, *args, gluco_cache_path=None, **kwargs):
+    def __init__(self, *args, is_precompute_gluco=False, gluco_cache_path=None, **kwargs):
         """
         JEPA DataLoader with optional pre-computed glucodensity patches.
         
@@ -19,6 +20,7 @@ class JEPALoader(CSVDataLoader):
         super().__init__(*args, **kwargs)
         self.gluco_cache_path = gluco_cache_path
         self.gluco_cache = None
+        self.is_precompute_gluco = is_precompute_gluco
         
         # Load pre-computed cache if provided
         if gluco_cache_path and os.path.exists(gluco_cache_path):
@@ -38,11 +40,14 @@ class JEPALoader(CSVDataLoader):
         subject_df = self.df[self.df[self.subject_col] == subject]
         ts_raw = subject_df[self.glucose_value_col].values
 
-        # normalize on-the-fly
-        assert self.normalize and self.global_mean is not None and self.global_std is not None, "ERROR: No normalization done to load this sample"
-
-        ts = (ts_raw - self.global_mean) / self.global_std
-        ts = ts_raw
+        if not self.is_precompute_gluco:
+            # normalize on-the-fly
+            assert self.normalize and self.global_mean is not None and self.global_std is not None, "ERROR: No normalization done to load this sample"
+            ts = (ts_raw - self.global_mean) / self.global_std
+        else:
+            # take the raw cgm for glucodensity precomputation
+            ts = ts_raw
+            
         ts = torch.tensor(ts).float()
         df_stamp = subject_df[[self.timestamp_col]]
         df_stamp["timestamp"] = pd.to_datetime(df_stamp.timestamp)

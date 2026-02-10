@@ -23,6 +23,7 @@ dist/
 
 # Logs
 *.log
+*logs
 
 # Checkpoints / artifacts / runs
 wandb/
