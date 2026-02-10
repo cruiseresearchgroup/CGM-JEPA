@@ -22,6 +22,8 @@ class TS2VecEncoderWrapper(nn.Module):
     def __init__(self, ts2vec_model: TS2Vec, device: str):
         super().__init__()
         self.ts2vec_model = ts2vec_model
+        # Register a dummy parameter so .parameters() is non-empty and has a device
+        self.dummy_param = nn.Parameter(torch.zeros(1).to(device))
         self.device = device
 
     def forward(self, x):

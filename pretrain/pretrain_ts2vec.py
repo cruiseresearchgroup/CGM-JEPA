@@ -17,6 +17,10 @@ from copy import deepcopy
 from typing import Optional
 import wandb
 
+import warnings
+
+warnings.filterwarnings("ignore")
+
 from models.ts2vec.ts2vec import TS2Vec
 
 from config.config_pretrain import config
@@ -37,74 +41,41 @@ def extract_raw_timeseries_from_loader(loader):
         numpy array of shape (n_samples, n_timestamps, n_features)
     """
     all_data = []
-    
-    dataset = loader.dataset
-    
-    # JEPALoader inherits from CSVDataLoader, which stores samples as (subject, split_idx)
-    # We need to extract the actual time series from the CSV data
-    for idx in range(len(dataset)):
+
+    for batch_idx, batch in enumerate(loader):
         try:
-            # JEPALoader samples are (subject, split_idx) tuples
-            sample = dataset.samples[idx]
-            if len(sample) != 2:
-                print(f"Warning: Sample {idx} has unexpected format: {sample}, skipping")
-                continue
-            
-            subject, split_idx = sample
-            
-            # Get the full time series for this subject from raw_samples (preferred) or dataframe
-            if hasattr(dataset, 'raw_samples') and subject in dataset.raw_samples:
-                ts_raw = dataset.raw_samples[subject]
-            elif hasattr(dataset, 'df') and hasattr(dataset, 'subject_col') and hasattr(dataset, 'glucose_value_col'):
-                subject_df = dataset.df[dataset.df[dataset.subject_col] == subject]
-                ts_raw = subject_df[dataset.glucose_value_col].values
+            # JEPALoader returns (patches, timestamp_patches, mask_indices, non_mask_indices)
+            # (optionally plus gluco_patches when using a cache). We only need CGM patches.
+            if isinstance(batch, (list, tuple)) and len(batch) >= 1:
+                patches = batch[0]
             else:
-                print(f"Warning: Cannot access data for subject {subject}, skipping")
+                patches = batch
+
+            # patches: (B, num_patches, patch_size)
+            if patches.ndim != 3:
+                print(f"Warning: Unexpected patches shape {patches.shape} in batch {batch_idx}, skipping")
                 continue
-            
-            # Extract the split
-            start_idx = split_idx * dataset.series_split_size
-            end_idx = start_idx + dataset.series_split_size
-            selected_series = ts_raw[start_idx:end_idx].copy()
-            
-            # Skip if empty
-            if len(selected_series) == 0:
-                continue
-            
-            # Handle padding if needed
-            if len(selected_series) < dataset.series_split_size:
-                padding_size = dataset.series_split_size - len(selected_series)
-                padding_glucose = np.full(padding_size, selected_series[-1])
-                selected_series = np.concatenate([selected_series, padding_glucose])
-            
-            # Ensure 1D array, then reshape to (1, n_timestamps, 1) for univariate time series
-            # TS2Vec expects (n_samples, n_timestamps, n_features)
-            if selected_series.ndim == 0:
-                continue
-            elif selected_series.ndim == 1:
-                selected_series = selected_series.reshape(1, -1, 1)
-            elif selected_series.ndim == 2:
-                # If already 2D, add feature dimension
-                selected_series = selected_series.reshape(1, selected_series.shape[0], selected_series.shape[1])
-            else:
-                # Already 3D, just add batch dimension if needed
-                if selected_series.shape[0] != 1:
-                    selected_series = selected_series.reshape(1, *selected_series.shape)
-            
-            all_data.append(selected_series)
+
+            B, num_patches, patch_size = patches.shape
+
+            # Flatten patches back into a contiguous time series per sample:
+            # (B, num_patches, patch_size) -> (B, num_patches * patch_size, 1)
+            series = patches.reshape(B, num_patches * patch_size, 1).cpu().numpy()
+
+            all_data.append(series)
         except Exception as e:
-            print(f"Warning: Skipping sample {idx} due to error: {e}")
+            print(f"Warning: Skipping batch {batch_idx} due to error: {e}")
             continue
-    
+
     if not all_data:
         raise ValueError("No valid data samples found in loader")
-    
-    # Concatenate all samples
+
+    # Concatenate all batches into a single array
     data = np.concatenate(all_data, axis=0)  # (n_samples, n_timestamps, n_features)
-    
-    print(f"Extracted {len(all_data)} samples")
+
+    print(f"Extracted {data.shape[0]} samples")
     print(f"Data shape: {data.shape}")
-    
+
     return data
 
 
@@ -217,7 +188,6 @@ def main():
     
     metadata = {
         "model_type": "ts2vec",
-        "data": config["data"],
         "patch_size": config["patch_size"],
         "output_dims": ts2vec_config["output_dims"],
         "hidden_dims": ts2vec_config["hidden_dims"],
@@ -232,7 +202,7 @@ def main():
         "final_loss": float(loss_log[-1]) if loss_log else None,
     }
     
-    save_model("ts2vec", model, path_save)
+    model.save(path_save)
     
     if run is not None and config.get("enable_wandb", False):
         artifact = wandb.Artifact(
