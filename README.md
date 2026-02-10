@@ -2,14 +2,14 @@
 
 Official implementation of **CGM-JEPA** and **X-CGM-JEPA** - self-supervised joint embedding prediction architectures for continuous glucose monitoring time-series data.
 
-![CGM-JEPA Overview](overview.png)
+![CGM-JEPA Overview](/assets/overview.png)
 
 **Key contributions:**
 - Masked prediction framework for CGM patches enabling label-efficient learning
 - Cross-view extension (X-CGM-JEPA) for improved transfer under distribution shifts
 - Evaluation under cohort generalization, venous-to-CGM transfer, and real-world deployment
 
-![X-CGM-JEPA Architecture](architecture.png)
+![X-CGM-JEPA Architecture](/assets/architecture.png)
 
 📄 **Paper:** [Link TBD]
 
