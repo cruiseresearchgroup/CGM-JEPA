@@ -1,0 +1,52 @@
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# Checkpoints / artifacts / runs
+wandb/
+artifacts/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.pkl
+
+# Local data & outputs
+Dataset/
+data/
+data_raw/
+Output/
+outputs/
+results/
+notebooks/
+
+# TS2Vec submodule extras (keep code, ignore its outputs)
+models/ts2vec/.venv/
+models/ts2vec/__pycache__/
+models/ts2vec/outputs/
+
+# Misc
+.pytest_cache/
+.mypy_cache/
