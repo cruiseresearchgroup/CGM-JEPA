@@ -1,0 +1,3 @@
+[submodule "models/ts2vec"]
+	path = models/ts2vec
+	url = https://github.com/zhihanyue/ts2vec.git

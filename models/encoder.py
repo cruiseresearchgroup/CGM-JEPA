@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from ..utils.embed import DataEmbedding
-from ..utils.modules import *
-from ..utils.mask_utils import *
+from utils.embed import DataEmbedding
+from utils.modules import *
+from utils.mask_utils import *
 
 class Encoder(nn.Module):
     '''
@@ -13,7 +13,6 @@ class Encoder(nn.Module):
     '''
     def __init__(
         self,
-        num_patches,
         dim_in,
         kernel_size,
         embed_dim,
@@ -33,7 +32,6 @@ class Encoder(nn.Module):
         super().__init__()
 
         self.embed_dim = embed_dim
-        self.num_patches = num_patches
         self.activation = embed_activation if embed_activation else nn.GELU()
 
         self.data_embedding = DataEmbedding(
