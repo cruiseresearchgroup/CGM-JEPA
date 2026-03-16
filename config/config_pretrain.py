@@ -13,7 +13,7 @@ config = {
     "random_seed": 43,
     
     # Loader
-    "mask_ratio" : 0.75,
+    "mask_ratio" : 0.25,
     "gluco_loss_weight": 1.0,  # Weight for glucodensity loss (increase if gluco loss is too high)
     "patch_size": 12,
 
