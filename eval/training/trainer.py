@@ -4,7 +4,6 @@ from sklearn.multioutput import MultiOutputRegressor
 from tqdm import tqdm
 
 import numpy as np
-import wandb
 import torch.nn.functional as F
 
 from data_loaders.data_transformer import PatchDataTransformer
@@ -34,6 +33,9 @@ class Trainer:
         self.is_val_available = val_loader is not None
         
         self.handler = ClassificationHandler()
+        # Accumulates per-subject test predictions across all model_configs in this fold.
+        # Populated by train_classical_ml; consumed by caller via .preds_rows.
+        self.preds_rows = []
             
     def _get_transformer(self, loader):
         dataset = loader.dataset
@@ -116,11 +118,11 @@ class Trainer:
                 else:
                     # apply PCA
                     pca = sklearn.decomposition.PCA(n_components=2)
-                    train_tuple = (pca.fit_transform(train_tuple[0]), train_tuple[2])
-                    test_tuple = (pca.transform(test_tuple[0]), test_tuple[2])
+                    train_tuple = (pca.fit_transform(train_tuple[0]), train_tuple[2], train_tuple[3])
+                    test_tuple = (pca.transform(test_tuple[0]), test_tuple[2], test_tuple[3])
 
                     if self.is_val_available:
-                        val_tuple = (pca.transform(val_tuple[0]), val_tuple[2])
+                        val_tuple = (pca.transform(val_tuple[0]), val_tuple[2], val_tuple[3])
 
                 results = self.train_classical_ml(
                     classifier,
@@ -153,21 +155,21 @@ class Trainer:
             - data_tuple: Tuple of (x, y) where x is input data
         @return: Tuple of (encoded_features, y) where encoded_features are numpy arrays
         '''
-        x, x_mark, y = data_tuple
+        x, x_mark, y, subjects = data_tuple
         transformer = self._get_transformer(self.train_loader)
-        
+
         # Ensure x is on the same device as encoder
         device = next(encoder.parameters()).device
         x = x.to(device)
         x_mark = x_mark.to(device)
-        
+
         if isinstance(transformer, PatchDataTransformer):
             encoded = transformer.encode(encoder, x, x_mark)
         else:
             encoded = transformer.encode(encoder, x)
-            
+
         encoded = encoded.detach().cpu().numpy()
-        return (encoded, y)
+        return (encoded, y, subjects)
 
     def train_dl(self, 
         model, 
@@ -308,37 +310,62 @@ class Trainer:
         }
 
     def train_classical_ml(
-        self, 
+        self,
         model,
-        train: (list, list), 
-        test: (list, list), 
+        train: (list, list),
+        test: (list, list),
         val: (list, list),
         name: str = "model"
     ):
         y_train = np.array(train[1])
         y_test = np.array(test[1])
-        y_val = np.array(val[1])
-        
+        y_val = np.array(val[1]) if val is not None and val[1] is not None else None
+        # Subjects are optional 3rd element (post-extract/PCA tuples include them)
+        s_test = test[2] if len(test) >= 3 else None
+
         model.fit(train[0], y_train)
+
+        # Log selected C if model supports it (e.g. LogisticRegressionCV)
+        if hasattr(model, 'C_'):
+            print(f"  [{name}] Selected C: {model.C_[0]:.4f}")
+
         y_train_preds = self.handler.predict(model, train[0])
         y_train_probs = self.handler.predict_proba(model, train[0])
 
         y_test_preds = self.handler.predict(model, test[0])
         y_test_probs = self.handler.predict_proba(model, test[0])
 
+        # Record per-subject test predictions for post-hoc analysis (demographic stratification, etc.)
+        if s_test is not None:
+            probs_pos = (
+                y_test_probs[:, 1] if hasattr(y_test_probs, "ndim") and y_test_probs.ndim == 2
+                else np.asarray(y_test_probs).ravel()
+            )
+            for subj, y_true, y_pred, p in zip(s_test, y_test, y_test_preds, probs_pos):
+                self.preds_rows.append({
+                    "model": name,
+                    "subject": str(subj),
+                    "y_true": int(y_true),
+                    "y_pred": int(y_pred),
+                    "y_prob": float(p),
+                })
+
         if self.is_val_available:
             y_val_preds = self.handler.predict(model, val[0])
             y_val_probs = self.handler.predict_proba(model, val[0])
-        
+
         train_metrics = self.handler.get_metrics(y_train_preds, y_train, y_train_probs)
         test_metrics = self.handler.get_metrics(y_test_preds, y_test, y_test_probs)
         val_metrics = self.handler.get_metrics(y_val_preds, y_val, y_val_probs) if self.is_val_available else {}
-        
+
         results = {
             "train": train_metrics,
             "test": test_metrics,
-            "val": val_metrics
+            "val": val_metrics,
         }
+
+        if hasattr(model, 'C_'):
+            results["selected_C"] = float(model.C_[0])
 
         return results
 
@@ -346,10 +373,12 @@ class Trainer:
         x_train_all = []
         x_train_mark_all = []
         y_train_all = []
+        s_train_all = []
 
         x_test_all = []
         x_test_mark_all = []
         y_test_all = []
+        s_test_all = []
 
         for subjects_trains, x_train_patches_tensors, x_train_mark_patches_tensors, y_trains in self.train_loader:
             x_trains = x_train_patches_tensors
@@ -360,6 +389,7 @@ class Trainer:
             x_train_all.extend(x_trains.cpu().detach().numpy())
             x_train_mark_all.extend(x_trains_mark.cpu().detach().numpy())
             y_train_all.extend(y_trains)
+            s_train_all.extend(list(subjects_trains))
         x_train_all = torch.Tensor(x_train_all)
         x_train_mark_all = torch.Tensor(x_train_mark_all)
 
@@ -372,16 +402,19 @@ class Trainer:
             x_test_all.extend(x_tests.cpu().detach().numpy())
             x_test_mark_all.extend(x_tests_mark.cpu().detach().numpy())
             y_test_all.extend(y_tests)
+            s_test_all.extend(list(subjects_tests))
         x_test_all = torch.Tensor(x_test_all)
         x_test_mark_all = torch.Tensor(x_test_mark_all)
 
         x_val_all = None
         x_val_mark_all = None
         y_val_all = None
+        s_val_all = None
         if self.is_val_available:
             x_val_all = []
             x_val_mark_all = []
             y_val_all = []
+            s_val_all = []
             for subjects_vals, x_val_patches_tensors, x_val_mark_patches_tensors, y_vals in self.val_loader:
                 x_vals = x_val_patches_tensors
                 x_vals_mark = x_val_mark_patches_tensors
@@ -391,8 +424,13 @@ class Trainer:
                 x_val_all.extend(x_vals.cpu().detach().numpy())
                 x_val_mark_all.extend(x_vals_mark.cpu().detach().numpy())
                 y_val_all.extend(y_vals)
+                s_val_all.extend(list(subjects_vals))
             x_val_all = torch.Tensor(x_val_all)
             x_val_mark_all = torch.Tensor(x_val_mark_all)
 
-        return (x_train_all, x_train_mark_all, y_train_all), (x_test_all, x_test_mark_all, y_test_all), (x_val_all, x_val_mark_all, y_val_all)
+        return (
+            (x_train_all, x_train_mark_all, y_train_all, s_train_all),
+            (x_test_all, x_test_mark_all, y_test_all, s_test_all),
+            (x_val_all, x_val_mark_all, y_val_all, s_val_all),
+        )
 

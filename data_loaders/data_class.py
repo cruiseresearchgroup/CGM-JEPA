@@ -34,28 +34,27 @@ class JEPALoader(CSVDataLoader):
             print(f"⚠️  Warning: Cache path provided but file not found: {gluco_cache_path}")
     
     def __getitem__(self, idx):
-        subject, split_idx = self.samples[idx]
+        subject, start_idx = self.samples[idx]
 
         # get subject's data
         subject_df = self.df[self.df[self.subject_col] == subject]
         ts_raw = subject_df[self.glucose_value_col].values
 
-        if not self.is_precompute_gluco:
-            # normalize on-the-fly
-            assert self.normalize and self.global_mean is not None and self.global_std is not None, "ERROR: No normalization done to load this sample"
-            ts = (ts_raw - self.global_mean) / self.global_std
-        else:
-            # take the raw cgm for glucodensity precomputation
+        # Skip normalization if (a) precomputing glucodensity, or (b) normalize flag explicitly off
+        if self.is_precompute_gluco or not getattr(self, "normalize", True):
             ts = ts_raw
-            
+        else:
+            assert self.normalize and self.global_mean is not None and self.global_std is not None, \
+                "ERROR: No normalization done to load this sample"
+            ts = (ts_raw - self.global_mean) / self.global_std
+
         ts = torch.tensor(ts).float()
         df_stamp = subject_df[[self.timestamp_col]]
         df_stamp["timestamp"] = pd.to_datetime(df_stamp.timestamp)
         timestamp = time_features(df_stamp, timeenc=self.timeenc, freq=self.freq)
         timestamp = torch.tensor(timestamp).float()
 
-        # extract the split
-        start_idx = split_idx * self.series_split_size
+        # extract the window using the precomputed start_idx
         end_idx = start_idx + self.series_split_size
         selected_series = ts[start_idx:end_idx]
         selected_timestamp = timestamp[start_idx:end_idx]
@@ -104,9 +103,9 @@ class JEPALoader(CSVDataLoader):
 
         # Load pre-computed glucodensity patches if available; else compute on-the-fly
         if self.gluco_cache is not None:
-            subject, split_idx = self.samples[idx]
+            subject, start_idx = self.samples[idx]
             try:
-                gluco_patches = self.gluco_cache[(subject, split_idx)]
+                gluco_patches = self.gluco_cache[(subject, start_idx)]
                 gluco_patches = torch.tensor(gluco_patches, dtype=torch.float32)
                 return patches_tensor, time_feat, mask_indices, non_mask_indices, gluco_patches
             except KeyError:
@@ -132,14 +131,13 @@ class GluFormerDataLoader(CSVDataLoader):
         return bin_idx
 
     def __getitem__(self, idx):
-        subject, split_idx = self.samples[idx]
+        subject, start_idx = self.samples[idx]
 
         # assume we already have the vocab_size
         subject_df = self.df[self.df[self.subject_col] == subject]
         ts = subject_df[self.glucose_value_col].values
 
         # no normalization, we take the value as token like a word
-        start_idx = split_idx * self.series_split_size
         end_idx = start_idx + self.series_split_size
         selected_series = ts[start_idx:end_idx]
 

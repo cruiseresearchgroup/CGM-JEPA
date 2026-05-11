@@ -6,8 +6,17 @@ import numpy as np
 import math
 import wandb
 
-from scipy.interpolate import make_smoothing_spline
+from scipy import stats
 from sklearn.metrics import roc_auc_score, recall_score, precision_score, f1_score, roc_curve, mean_squared_error, mean_absolute_error, r2_score, average_precision_score
+
+
+def wilcoxon_test_paired(values_a, values_b):
+    """Wilcoxon signed-rank test for paired differences."""
+    diffs = np.array(values_a) - np.array(values_b)
+    if np.all(diffs == 0):
+        return 0.0, 1.0
+    stat, p = stats.wilcoxon(diffs, alternative='two-sided')
+    return np.mean(diffs), p
 
 
 # TODO: Call this before pretraining and evaluation
@@ -15,6 +24,12 @@ def seed_everything(seed):
     np.random.seed(seed)
     random.seed(seed)
     torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
     # Cut & paste from PyTorch official master until it's in a few official releases - RW
@@ -72,21 +87,6 @@ def load_device():
     # Note: nn.Embedding has a bug with mps, but we're not using nn.Embedding directly
     # If you encounter issues with MPS, you can force CPU here
     return device
-
-def apply_smoothing(lam, x_raw):
-    x_arr = np.array(x_raw)
-    time_indices = np.arange(len(x_raw))
-
-    # filter any missing values to fit spline
-    valid_mask = x_arr != -1
-    valid_x = x_arr[valid_mask]
-    valid_indices = time_indices[valid_mask]
-    spline = make_smoothing_spline(x=valid_indices, y=valid_x, lam=lam)
-
-    # use it to smooth all the timepoints
-    x_arr = spline(time_indices)
-
-    return x_arr.tolist()
 
 def get_metrics(predictions, targets, probs=None):
     
@@ -231,16 +231,19 @@ def analyze_results(file_path, use_wandb=False, wandb_project=None, experiment_c
 
     all_metrics = sorted(list(all_metrics))    
 
-    # Display results sorted by mean performance
+    # Display results sorted by mean performance and collect stats for wandb
+    all_stat_results = {}  # {metric: {model: {mean, std}}}
+    all_paired_tests = {}  # {metric: [{best, other, diff, p, sig}]}
+
     for metric in all_metrics:
         direction = metric_directions.get(metric, "max")
-        
+
         if metric == "roc_curve":
             continue
-        
+
         print(f"\nMetric: {metric.upper()} ({direction})")
         print("=" * 30)
-        
+
         results = []
         for name, metrics in model_stats.items():
             if metric in metrics:
@@ -248,18 +251,37 @@ def analyze_results(file_path, use_wandb=False, wandb_project=None, experiment_c
                     continue
                 values = metrics[metric]
                 mean = np.mean(values)
-                std = np.std(values)
-                results.append((name, mean, std))
-        
+                std = np.std(values, ddof=1)
+                results.append((name, mean, std, values))
+
         # Sort based on direction
         if direction == "min":
             results.sort(key=lambda x: x[1]) # Ascending
         else:
             results.sort(key=lambda x: x[1], reverse=True) # Descending
-            
-        for name, mean, std in results:
+
+        # Store per-model stats
+        all_stat_results[metric] = {}
+        for name, mean, std, _ in results:
             print(f"{name}: {mean:.4f} +/- {std:.4f}")
-    
+            all_stat_results[metric][name] = {"mean": float(mean), "std": float(std)}
+
+        # Paired Wilcoxon test: compare top model against all others
+        if len(results) >= 2:
+            best_name, _, _, best_values = results[0]
+            print(f"\n  Paired tests vs {best_name}:")
+            all_paired_tests[metric] = []
+            for name, _, _, other_values in results[1:]:
+                if len(other_values) == len(best_values):
+                    mean_diff, p_wilcoxon = wilcoxon_test_paired(best_values, other_values)
+                    sig = "**" if p_wilcoxon < 0.05 else "*" if p_wilcoxon < 0.10 else ""
+                    print(f"    vs {name}: diff={mean_diff:+.4f}  Wilcoxon p={p_wilcoxon:.4f} {sig}")
+                    all_paired_tests[metric].append({
+                        "best": best_name, "other": name,
+                        "diff": float(mean_diff),
+                        "p_wilcoxon": float(p_wilcoxon), "sig": sig,
+                    })
+
     # Log to wandb if enabled
     if use_wandb and wandb_project:
         # Filter config to remove non-serializable items (like model objects)
@@ -273,11 +295,14 @@ def analyze_results(file_path, use_wandb=False, wandb_project=None, experiment_c
             # Optional: use wandb_run_name from config if provided
             run_name = experiment_config.get("wandb_run_name")
         
+        wandb_project_name = experiment_config.get("wandb_project", f"cgm-{task}") if experiment_config else f"cgm-{task}"
+        base_tags = ["full comparison", "gluformer", "cgm jepa", "statistical_test"]
+        extra_tags = experiment_config.get("wandb_tags", []) if experiment_config else []
         with wandb.init(
-            project=f"cgm-{task}",
+            project=wandb_project_name,
             name=run_name,
             notes="CGM classification comparison between baseline and encoder based",
-            tags=["full comparison", "gluformer", "cgm jepa"],
+            tags=base_tags + list(extra_tags),
             config=serializable_config
         ) as run:
             # create aggregated table (mean/std across folds)
@@ -290,13 +315,35 @@ def analyze_results(file_path, use_wandb=False, wandb_project=None, experiment_c
             fold_metrics = extract_fold_metrics_for_wandb(pipeline_logs, all_metrics)
             if fold_metrics:
                 run.summary["fold_level_metrics"] = fold_metrics
-            
+
+            # Log per-model stats with CI
+            run.summary["model_stats"] = all_stat_results
+
+            # Log paired statistical tests
+            if all_paired_tests:
+                run.summary["paired_tests"] = all_paired_tests
+
+                # Also log as a wandb Table for easy viewing
+                paired_rows = []
+                for metric, tests in all_paired_tests.items():
+                    for t in tests:
+                        paired_rows.append([
+                            metric, t["best"], t["other"],
+                            t["diff"], t["p_wilcoxon"], t["sig"],
+                        ])
+                if paired_rows:
+                    paired_table = wandb.Table(
+                        columns=["metric", "best_model", "vs_model", "mean_diff", "p_wilcoxon", "sig"],
+                        data=paired_rows
+                    )
+                    run.log({"paired_tests_table": paired_table})
+
             run.use_artifact(f'hadamuhammad-unsw/cgm-jepa/cgm-jepa:{experiment_config["cgm_jepa_version"]}', type="model")
             run.use_artifact(f'hadamuhammad-unsw/gluformer/gluformer:{experiment_config["gluformer_version"]}', type="model")
             run.use_artifact(f'hadamuhammad-unsw/cgm-jepa-glucodensity-separate/cgm-jepa-glucodensity-separate:{experiment_config["cgm_jepa_glu_version"]}', type="model")
 
 def create_table_for_wandb(all_metrics: list, model_stats: dict) -> list:
-    # expand all_metrics to include metric_mean and metric_std
+    # expand all_metrics to include metric_mean, metric_std
     expanded_metric = ["model"]
     for metric in all_metrics:
         if metric == "roc_curve":
@@ -312,7 +359,6 @@ def create_table_for_wandb(all_metrics: list, model_stats: dict) -> list:
     for model_name, metrics in model_stats.items():
         model_result = [model_name]
         for metric in all_metrics:
-            # create the list [model, *all_metrics]
             values = metrics[metric]
 
             if metric == "roc_curve":
@@ -322,14 +368,14 @@ def create_table_for_wandb(all_metrics: list, model_stats: dict) -> list:
                 }
             else:
                 mean = float(np.mean(values))
-                std = float(np.std(values))
+                std = float(np.std(values, ddof=1))
                 model_result += [mean, std]
-                
+
         all_results.append(model_result)
-        
+
         if not roc_res:
             roc_curve_results.append(roc_res)
-    
+
     return (expanded_metric, all_results, roc_curve_results)
 
 def extract_fold_metrics_for_wandb(pipeline_logs: dict, all_metrics: list):

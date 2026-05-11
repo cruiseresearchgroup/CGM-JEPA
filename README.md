@@ -1,128 +1,201 @@
-# CGM-JEPA: Learning Transferable Continuous Glucose Monitor Representations via Self-Supervised Pretraining and Cross-View Regularization
+# CGM-JEPA: Learning Consistent Continuous Glucose Monitor Representations via Predictive Self-Supervised Pretraining
 
-Official implementation of **CGM-JEPA** and **X-CGM-JEPA** - self-supervised joint embedding prediction architectures for continuous glucose monitoring time-series data.
+Official implementation of **CGM-JEPA** and **X-CGM-JEPA** — self-supervised joint embedding-predictive architectures for continuous glucose monitor (CGM) time-series, evaluated on metabolic-subphenotype classification (insulin resistance, β-cell dysfunction).
 
 ![CGM-JEPA Overview](/assets/overview.png)
 
 **Key contributions:**
-- Masked prediction framework for CGM patches enabling label-efficient learning
-- Cross-view extension (X-CGM-JEPA) for improved transfer under distribution shifts
-- Evaluation under cohort generalization, venous-to-CGM transfer, and real-world deployment
+- Masked-patch prediction framework for CGM enabling label-efficient learning.
+- Cross-view extension (X-CGM-JEPA) that augments the temporal view with a Glucodensity (distributional) view, improving transfer under distribution shifts.
+- Evaluation under cohort generalization, venous-to-CGM modality transfer, and in-domain home CGM.
 
 ![X-CGM-JEPA Architecture](/assets/architecture.png)
 
 📄 **Paper:** [Link TBD]
+🤗 **Dataset:** [`<your-handle>/cgm-jepa-dataset`](https://huggingface.co/datasets/<your-handle>/cgm-jepa-dataset) on Hugging Face
+🤗 **Pretrained weights:** [`<your-handle>/cgm-jepa-weights`](https://huggingface.co/<your-handle>/cgm-jepa-weights) on Hugging Face
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone and install
+# 1. Clone and install
 git clone https://github.com/cruiseresearchgroup/CGM-JEPA.git
-cd cgm_jepa
-
+cd CGM-JEPA
 conda create -n cgm_jepa python=3.10
 conda activate cgm_jepa
 pip install -r requirements.txt
 
-# Pretrain X-CGM-JEPA
-python -m pretrain.pretrain_x_cgm_jepa
+# 2. Download dataset and pretrained weights from Hugging Face
+huggingface-cli download <your-handle>/cgm-jepa-dataset --repo-type dataset --local-dir Dataset_Open
+huggingface-cli download <your-handle>/cgm-jepa-weights --local-dir Output
 
-# Evaluate on downstream tasks
-python -m eval.class_reg
+# 3. Run the full evaluation (matches Tables 1–6 in the paper, ~1–2 hours)
+python scripts/run_all_eval.py
+```
+
+---
+
+## Repository structure
+
+```
+.
+├── config/                  # Pretraining + downstream-eval configurations
+│   ├── config_pretrain.py
+│   ├── config_downstream.py
+│   └── model_configs.py     # Loads pretrained encoders + builds probe lineup
+├── data_loaders/            # Dataset loaders (CSV / JSON / patch / token / flat)
+├── eval/                    # Downstream evaluation + linear-probe trainer
+│   ├── class_reg.py         # Main eval entry point
+│   ├── training/
+│   └── baseline_utils/      # Mantis, MOMENT, TS2Vec, Ridge baselines
+├── models/                  # Architectures: Encoder, Predictor, GluFormer, etc.
+├── pretrain/                # Pretraining scripts for each model
+├── scripts/
+│   ├── preprocess_dataset.py  # Rebuild Dataset_Open/ from upstream sources
+│   └── run_all_eval.py        # Orchestrator: 3 settings × 2 endpoints
+├── utils/                   # Stats, RevIN, glucodensity precompute
+└── README.md
+```
+
+After the Hugging Face downloads, you also have:
+
+```
+├── Dataset_Open/            # Preprocessed splits + pretraining CGM
+│   ├── train_split.json
+│   ├── validation_split.json
+│   ├── cgm_initial_cohort.csv
+│   └── gluco_cache_stride144.pkl   # Precomputed glucodensity patches
+└── Output/                  # Pretrained encoder checkpoints
+    ├── cgm_jepa.pt
+    ├── x_cgm_jepa.pt
+    ├── gluformer.pt
+    └── ts2vec.pkl
 ```
 
 ---
 
 ## Dataset
 
-Two clinical cohorts with complementary modality availability:
+Two clinical cohorts (deduplicated; see paper Appendix for full details):
 
-| Cohort | Size | Data Type | Usage |
-|--------|------|-----------|-------|
-| Initial | N=32 | Unlabeled home CGM + labeled in-clinic venous glucose | Pretraining + evaluation |
-| Validation | N=24 | Labeled in-clinic venous glucose + in-clinic/home CGM | Evaluation |
+| Cohort | Subjects | Modalities |
+|---|---|---|
+| **Initial** | 27 | In-clinic venous OGTT |
+| **Validation** | 17 | In-clinic venous OGTT, in-clinic CGM, two home-CGM windows |
 
-**Data format:** 24-hour sequences represented as **24 hourly patches** (12 points/hour at 5-min sampling = 288 points/day)
+**Sequence format:** 24-hour windows at 5-min sampling = 288 timesteps = 24 patches of size 12.
 
-### Expected CSV format
+**Labels (per subject):**
+- `ir`: insulin resistance (binary, derived from SSPG).
+- `beta`: β-cell dysfunction (binary, derived from disposition index).
+
+The released dataset is preprocessed (smoothing-spline imputation, label extraction, train/validation deduplication). See "Regenerating the dataset" below if you want to reconstruct it from the original sources.
+
+### Regenerating the dataset
+
+The release on Hugging Face is what we used in the paper. If you want to rebuild it from upstream sources (e.g. for an audit or to apply different preprocessing), [`scripts/preprocess_dataset.py`](scripts/preprocess_dataset.py) is the reference implementation:
+
 ```
-subject,timestamp,glucose_value
-001,2024-01-01 00:00:00,95
-001,2024-01-01 00:05:00,97
-...
+INPUTS                                              OUTPUTS (Dataset_Open/)
+────────────────────────────────────────            ─────────────────────────
+Metabolic_Subphenotype_Predictor/data/              train_split.json
+  filtered_cgm_03222026.csv                ─┐       validation_split.json
+  filtered_ogtt_…_03222026.csv              ├──►    cgm_initial_cohort.csv
+  filtered_metabolic_tests.csv              │
+                                            │
+Dataset/colas_pretrain.parquet            ──┘
 ```
 
-- 5-minute sampling interval
-- Place data files in `Dataset/` directory
+```bash
+# Clone the public Stanford metabolic-subphenotype data source
+git clone https://github.com/aametwally/Metabolic_Subphenotype_Predictor.git
+
+# The Colas et al. pretraining corpus is a separate dependency obtained
+# from the original authors; place it at Dataset/colas_pretrain.parquet
+python scripts/preprocess_dataset.py
+```
 
 ---
 
 ## Pretraining
 
-All commands run from project root. Configurations in `config/config_pretrain.py`.
+All commands run from project root. Configurations live in [`config/config_pretrain.py`](config/config_pretrain.py).
 
-### X-CGM-JEPA
+**X-CGM-JEPA** — masked CGM-patch prediction + cross-view Glucodensity prediction:
 ```bash
 python -m pretrain.pretrain_x_cgm_jepa
 ```
-Masked prediction on CGM patches + cross-view glucodensity objective. Best for transfer scenarios.
 
-### CGM-JEPA
+**CGM-JEPA** — masked CGM-patch prediction only:
 ```bash
 python -m pretrain.pretrain_cgm_jepa
 ```
-Masked representation prediction on CGM patches only. Strong in-domain performance.
 
-### Baseline models
-
-**GluFormer:**
+**Baselines** — GluFormer and TS2Vec are also pretrained on our open CGM corpus:
 ```bash
 python -m pretrain.pretrain_gluformer
-```
-
-**TS2Vec:**
-```bash
 python -m pretrain.pretrain_ts2vec
 ```
 
-### Optional: Precompute glucodensity patches
+> **Note on reproducibility from re-pretraining.** Loading the released weights and running the downstream eval reproduces the paper's tables exactly. Re-running pretraining from scratch is expected to land within fold-to-fold noise of the paper's numbers, not bit-exact (due to MPS/CUDA float drift and non-deterministic kernels).
 
-For faster training:
+### Optional — precompute Glucodensity patches
+
+The X-CGM-JEPA cross-view objective requires Glucodensity images. To avoid recomputing them every epoch:
 
 ```bash
 python -m utils.precompute_glucodensity \
-  --data_path Dataset/cgm_initial_cohort.csv \
-  --output_path Dataset/gluco_cache.pkl
+  --data_path Dataset_Open/cgm_initial_cohort.csv \
+  --output_path Dataset_Open/gluco_cache_stride144.pkl
 ```
 
-Update `config["gluco_cache_path"]` in `config/config_pretrain.py` to use cached patches.
+The released dataset already includes `gluco_cache_stride144.pkl`, so this step is only needed if you re-preprocess the data.
 
 ---
 
 ## Evaluation
 
-Evaluate two binary outcomes (insulin resistance and β-cell dysfunction) under three settings:
+We evaluate two binary outcomes (insulin resistance, β-cell dysfunction) under three regimes (each table corresponds to a `(pipeline, extract_method, val_extract_method)` config triple):
 
-1. **Cohort generalization:** Train on initial cohort, test on validation cohort
-2. **Venous-to-CGM transfer:** Train with venous supervision, test on CGM embeddings
-3. **Real-world home CGM:** Train and test on home CGM
+| Regime | Config |
+|---|---|
+| **In-domain home CGM** | `validation_to_validation`, `cgm_home_mean → cgm_home_mean` |
+| **Venous → home-CGM transfer** | `validation_to_validation`, `ctru_venous → cgm_home_mean` |
+| **Cohort generalization (venous)** | `initial_to_validation`, `ctru_venous → ctru_venous` |
 
+Each cell is 20 iterations × 2-fold stratified CV (40 paired observations per model).
+
+**Run everything (3 settings × 2 endpoints):**
+```bash
+python scripts/run_all_eval.py
+```
+
+**Run one cell directly:**
 ```bash
 python -m eval.class_reg
 ```
+(Configure pipeline / metabolic / extract_method in [`config/config_downstream.py`](config/config_downstream.py).)
 
-**Configuration:** `config/config_downstream.py`
+**Evaluated models:** CGM-JEPA, X-CGM-JEPA, GluFormer, TS2Vec, MOMENT-Small, MOMENT-Large, Mantis, plus a PCA + L2-LR baseline.
 
-**Evaluated models:**
-- **Pretrained encoders:** CGM-JEPA, X-CGM-JEPA, GluFormer, TS2Vec, MOMENT, Mantis (linear probe)
-- **Classical baselines:** Logistic regression, linear SVM, ridge regression, random forest, KNN
+**Metrics:** AUROC, F1, PRAUC (downstream); Silhouette, Calinski–Harabasz, Davies–Bouldin, ARI, NMI, between/within ratio, intra/inter-cluster distance (representation).
 
-**Metrics:** AUROC, AUPRC, F1, representation quality metrics
+---
 
-## Reproducibility
+## Citation
 
-- **Seed control:** Set random seeds in config files
-- **Weights & Biases:** Enable with `enable_wandb=True` in configs for experiment tracking
-- **Hyperparameters:** All hyperparameters documented in `config/` files
+```bibtex
+% TBD — replace once the paper has a stable venue/arXiv link
+@misc{cgmjepa2026,
+  title   = {CGM-JEPA: Learning Consistent Continuous Glucose Monitor Representations via Predictive Self-Supervised Pretraining},
+  author  = {<author list>},
+  year    = {2026},
+  url     = {https://github.com/cruiseresearchgroup/CGM-JEPA}
+}
+```
+
+## License
+
+MIT (see [LICENSE](LICENSE)).

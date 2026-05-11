@@ -28,14 +28,17 @@ dist/
 # Checkpoints / artifacts / runs
 wandb/
 artifacts/
+media/
 checkpoints/
 *.ckpt
 *.pt
 *.pth
 *.pkl
 
-# Local data & outputs
+# Local data & outputs (released externally on Hugging Face)
 Dataset/
+Dataset_Open/
+Metabolic_Subphenotype_Predictor/
 data/
 data_raw/
 Output/
@@ -48,6 +51,15 @@ models/ts2vec/.venv/
 models/ts2vec/__pycache__/
 models/ts2vec/outputs/
 
+# Runtime-generated override files (written by run_*.py orchestrators)
+config/_*.json
+
+# Claude Code session metadata
+.claude/
+
 # Misc
 .pytest_cache/
 .mypy_cache/
+
+# Personal wandb-based loader (the published variant uses HF only)
+config/model_configs_wandb.py

@@ -24,14 +24,15 @@ if __name__ == "__main__":
 
     loader = get_gluformer_dataloader(
         path=config["path_data"],
-        batch_size=config["batch_size"]
+        batch_size=config["batch_size"],
+        stride=config.get("stride"),
     )
 
     vocab_size = loader.dataset.num_bins
     PAD_TOKEN = vocab_size
 
     artifact = wandb.Artifact(
-        name="gluformer", 
+        name="gluformer",
         type="model",
         metadata={
             "vocab_size": vocab_size,
@@ -40,7 +41,15 @@ if __name__ == "__main__":
             "num_layers": config["encoder_num_layers"],
             "dim_feedforward": 2 * config["encoder_embed_dim"],
             "max_seq_length": 25000,
-            "encoder_dropout": config["encoder_dropout"]
+            "encoder_dropout": config["encoder_dropout"],
+            "path_data": config["path_data"],
+            "data_source": os.path.basename(config["path_data"]),
+            "random_seed": config["random_seed"],
+            "stride": config.get("stride"),
+            "series_split_size": 288,
+            "num_epochs": config["num_epochs"],
+            "lr": config["lr"],
+            "batch_size": config["batch_size"],
         }
     )
 

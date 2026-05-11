@@ -139,7 +139,8 @@ if __name__ == "__main__":
         gluco_cache_path=gluco_cache_path
     )
 
-    loader.dataset.compute_stats(normalize_x=True)
+    loader.dataset.compute_stats(normalize_x=config.get("normalize_x", False))
+    print(f"  Normalization enabled: {loader.dataset.normalize}")
 
     input_dim = len(loader.dataset[0][0][0])
     num_cgm_patches = len(loader.dataset[0][0])
@@ -279,7 +280,9 @@ if __name__ == "__main__":
         "clip_grad_max_norm": config["clip_grad_max_norm"],
         "seed": config["random_seed"],
         "lr": config["lr"],
-        "gluco_loss_weight": config.get("gluco_loss_weight", 1.0)
+        "gluco_loss_weight": config.get("gluco_loss_weight", 1.0),
+        "normalize_x": config.get("normalize_x", False),
+        "stride": config.get("stride"),
     }
 
     artifact = wandb.Artifact(

@@ -1,13 +1,12 @@
 import copy
 import os
 import torch
-import wandb
 
 import torch.nn as nn
 
 from root import PROJECT_ROOT
 
-from sklearn.linear_model import LogisticRegression 
+from sklearn.linear_model import LogisticRegressionCV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
@@ -20,16 +19,81 @@ from models.gluformer.gluformer import GluFormer
 
 from utils.main_utils import load_device
 
+
+# Local layout under Output/ as published on Hugging Face
+# (https://huggingface.co/CRUISEResearchGroup/CGM-JEPA). The JEPA encoders use
+# the PyTorchModelHubMixin layout (directory with model.safetensors + config.json),
+# while the baselines retain their original on-disk formats.
+_LOCAL_WEIGHTS = {
+    "cgm_jepa": {
+        "path": "Output/cgm_jepa",          # directory for Encoder.from_pretrained
+        "metadata": {
+            "patch_size": 12,
+            "encoder_kernel_size": 3,
+            "encoder_embed_dim": 96,
+            "encoder_embed_bias": True,
+            "encoder_nhead": 6,
+            "encoder_num_layers": 3,
+        },
+    },
+    "x_cgm_jepa": {
+        "path": "Output/x_cgm_jepa",        # directory
+        "metadata": {
+            "patch_size": 12,
+            "encoder_kernel_size": 3,
+            "encoder_embed_dim": 96,
+            "encoder_embed_bias": True,
+            "encoder_nhead": 6,
+            "encoder_num_layers": 3,
+        },
+    },
+    "gluformer": {
+        "path": "Output/baselines/gluformer.pt",  # file
+        "metadata": {
+            "vocab_size": 278,
+            "embed_dim": 96,
+            "nhead": 6,
+            "num_layers": 3,
+        },
+    },
+    "ts2vec": {
+        "path": "Output/baselines/ts2vec.pkl",    # file
+        "metadata": {
+            "output_dims": 96,
+            "hidden_dims": 64,
+            "depth": 10,
+        },
+    },
+}
+
+
+def _resolve_local(name):
+    """Return (absolute_path, metadata) for the local checkpoint.
+
+    Raises if the asset isn't present, pointing the user to the HF download.
+    """
+    path = os.path.join(PROJECT_ROOT, _LOCAL_WEIGHTS[name]["path"])
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Local weight asset for '{name}' not found at {path}.\n"
+            f"Run:\n"
+            f"  huggingface-cli download CRUISEResearchGroup/CGM-JEPA --local-dir Output\n"
+            f"(see https://huggingface.co/CRUISEResearchGroup/CGM-JEPA)."
+        )
+    return path, _LOCAL_WEIGHTS[name]["metadata"]
+
 CLASSIFIER_SPECS = [
     {
         "key": "L2_LR",
         "name_suffix": "L2_LR",
-        "factory": lambda seed, C: LogisticRegression(
-            C=C,
+        "factory": lambda seed, _C: LogisticRegressionCV(
+            Cs=[0.001, 0.01, 0.1, 1.0, 10.0, 100.0],
             penalty="l2",
             solver="liblinear",
             max_iter=1000,
             class_weight="balanced",
+            cv=2,
+            scoring="roc_auc",
             random_state=seed,
         ),
     },
@@ -91,11 +155,12 @@ def _build_classifier_from_spec(
 
 
 def make_baseline_configs(
-    seed, LR_C, LSVC_C, R_alpha, RF_n_estimators, KNN_n_neighbors, exclude_knn=False
+    seed, LR_C, LSVC_C, R_alpha, RF_n_estimators, KNN_n_neighbors, exclude_knn=False, classifier_specs=None
 ):
     """Baselines without encoders."""
+    specs = classifier_specs or CLASSIFIER_SPECS
     configs = []
-    for spec in CLASSIFIER_SPECS:
+    for spec in specs:
         if spec["key"] == "KNN" and exclude_knn:
             continue
 
@@ -128,8 +193,10 @@ def make_probe_configs(
     include_knn=True,
     exclude_knn=False,
     extra_common=None,
+    classifier_specs=None,
 ):
     """Shared factory for encoder-based probe configs."""
+    specs = classifier_specs or CLASSIFIER_SPECS
     common = {
         "encoder": encoder,
         "use_encoder": True,
@@ -141,7 +208,7 @@ def make_probe_configs(
         common.update(extra_common)
 
     configs = []
-    for spec in CLASSIFIER_SPECS:
+    for spec in specs:
         if spec["key"] == "KNN" and (exclude_knn or not include_knn):
             continue
 
@@ -170,136 +237,118 @@ def get_model_configs(config):
 
     seed = config["random_seed"]
     exclude_knn = config.get("exclude_knn", False)
+    linear_probe_only = config.get("linear_probe_only", False)
 
-    cgm_jepa_version = config["cgm_jepa_version"]
-    gluformer_version = config["gluformer_version"]
-    cgm_jepa_glu_version = config["cgm_jepa_glu_version"]
-    cgm_ts2vec_version = config["cgm_ts2vec_version"]
+    # Filter classifier specs if linear_probe_only
+    active_specs = [s for s in CLASSIFIER_SPECS if s["key"] == "L2_LR"] if linear_probe_only else CLASSIFIER_SPECS
 
-    api = wandb.Api()
+    # ---- Resolve checkpoints from Hugging Face ----
+    # Encoders are loaded directly from
+    #   https://huggingface.co/CRUISEResearchGroup/CGM-JEPA
+    # which the project's Quick start tells external users to download into
+    # `Output/` via `huggingface-cli download CRUISEResearchGroup/CGM-JEPA --local-dir Output`.
+    # If you need the wandb-backed loader (artifact versions pinned to
+    # cgm-jepa:v18, cgm-jepa-glucodensity-separate:v19, gluformer:v5, ts2vec:v2),
+    # use `config/model_configs_wandb.py` (gitignored, personal use only).
 
-    # CGM-JEPA
-    cgm_jepa_artifact = api.artifact(f'hadamuhammad-unsw/cgm-jepa/cgm-jepa:{cgm_jepa_version}', type="model")
-    cgm_jepa_metadata = cgm_jepa_artifact.metadata
+    def _load_encoder_from_hf(name):
+        path, meta = _resolve_local(name)
+        return Encoder.from_pretrained(path).to(device), meta
 
-    cgm_jepa = Encoder(
+    cgm_jepa,   cgm_jepa_metadata   = _load_encoder_from_hf("cgm_jepa")
+    x_cgm_jepa, x_cgm_jepa_metadata = _load_encoder_from_hf("x_cgm_jepa")
+
+    # GluFormer (legacy state_dict .pt; PyTorchModelHubMixin not used)
+    gluformer_ckpt, gluformer_metadata = _resolve_local("gluformer")
+    gf_embed_dim  = gluformer_metadata["embed_dim"]
+    gf_vocab_size = gluformer_metadata.get("vocab_size", 280)
+    gluformer = GluFormer(
+        vocab_size=gf_vocab_size,
+        embed_dim=gf_embed_dim,
+        nhead=gluformer_metadata["nhead"],
+        num_layers=gluformer_metadata["num_layers"],
+        dim_feedforward=2 * gf_embed_dim,
+        max_seq_length=25000,
+        dropout=0.0,
+        pad_token=gf_vocab_size,
+    ).to(device)
+    gluformer.load_state_dict(
+        torch.load(gluformer_ckpt, map_location=device)["encoder"]
+    )
+    gluformer.output_head = nn.Identity()
+
+    # # classification
+    model_configs = make_baseline_configs(
+        seed, LR_C, LSVC_C, R_alpha, RF_n_estimators, KNN_n_neighbors,
+        exclude_knn=exclude_knn, classifier_specs=active_specs,
+    )
+
+    # Untrained encoders (random initialization baseline)
+    untrained_jepa = Encoder(
         dim_in=cgm_jepa_metadata["patch_size"],
         kernel_size=cgm_jepa_metadata["encoder_kernel_size"],
         embed_dim=cgm_jepa_metadata["encoder_embed_dim"],
         embed_bias=cgm_jepa_metadata["encoder_embed_bias"],
         nhead=cgm_jepa_metadata["encoder_nhead"],
         num_layers=cgm_jepa_metadata["encoder_num_layers"],
-        jepa=False # we don't apply jepa training in downstream
+        jepa=False
     ).to(device)
-    cgm_jepa_dir = cgm_jepa_artifact.download()
-    cgm_jepa.load_state_dict(torch.load(f"{cgm_jepa_dir}/cgm-jepa", map_location=device)["encoder"], strict=False)
-    
-    # X-CGM-JEPA
-    x_cgm_jepa_artifact = api.artifact(f'hadamuhammad-unsw/cgm-jepa-glucodensity-separate/cgm-jepa-glucodensity-separate:{cgm_jepa_glu_version}', type="model")
-    x_cgm_jepa_dir = x_cgm_jepa_artifact.download()
-    x_cgm_jepa_metadata = x_cgm_jepa_artifact.metadata
-    x_cgm_jepa = Encoder(
-        dim_in=x_cgm_jepa_metadata["patch_size"], # patch size
+
+    untrained_x_jepa = Encoder(
+        dim_in=x_cgm_jepa_metadata["patch_size"],
         kernel_size=x_cgm_jepa_metadata["encoder_kernel_size"],
         embed_dim=x_cgm_jepa_metadata["encoder_embed_dim"],
         embed_bias=x_cgm_jepa_metadata["encoder_embed_bias"],
         nhead=x_cgm_jepa_metadata["encoder_nhead"],
         num_layers=x_cgm_jepa_metadata["encoder_num_layers"],
-        jepa=False # we don't apply jepa training in downstream
+        jepa=False
     ).to(device)
-    x_cgm_jepa.load_state_dict(torch.load(f"{x_cgm_jepa_dir}/x_cgm_jepa", map_location=device)["encoder"], strict=True)
-
-    # GluFormer
-    gluformer_artifact = api.artifact(f'hadamuhammad-unsw/gluformer/gluformer:{gluformer_version}', type="model")
-    gluformer_metadata = gluformer_artifact.metadata
-    gluformer = GluFormer(
-        vocab_size=280,
-        embed_dim=gluformer_metadata["encoder_embed_dim"],
-        nhead=gluformer_metadata["encoder_nhead"],
-        num_layers=gluformer_metadata["encoder_num_layers"],
-        dim_feedforward=2 * gluformer_metadata["encoder_embed_dim"],
-        max_seq_length=25000,
-        dropout=0.0,
-        pad_token=280
-    ).to(device)
-    gluformer_dir = gluformer_artifact.download()
-    gluformer.load_state_dict(torch.load(f"{gluformer_dir}/gluformer", map_location=device)["encoder"])
-    # detach GluFormer head
-    gluformer.output_head = nn.Identity()
-
-    # # classification
-    model_configs = make_baseline_configs(
-        seed,
-        LR_C,
-        LSVC_C,
-        R_alpha,
-        RF_n_estimators,
-        KNN_n_neighbors,
-        exclude_knn=exclude_knn,
-    )
 
     # Probes with trained encoders
     # CGM-JEPA
-    model_configs.extend(
-        make_probe_configs(
-            seed,
-            encoder=cgm_jepa,
-            prefix="Pretrained_JEPA_Encoder",
-            output_type="patch",
-            patchify=True,
-            LR_C=LR_C,
-            LSVC_C=LSVC_C,
-            R_alpha=R_alpha,
-            RF_n_estimators=RF_n_estimators,
-            KNN_n_neighbors=KNN_n_neighbors,
-            include_knn=True,
-            exclude_knn=exclude_knn,
-        )
-    )
+    model_configs.extend(make_probe_configs(
+        seed, encoder=cgm_jepa, prefix="Pretrained_JEPA_Encoder",
+        output_type="patch", patchify=True,
+        LR_C=LR_C, LSVC_C=LSVC_C, R_alpha=R_alpha,
+        RF_n_estimators=RF_n_estimators, KNN_n_neighbors=KNN_n_neighbors,
+        include_knn=True, exclude_knn=exclude_knn, classifier_specs=active_specs,
+    ))
     # X-CGM-JEPA
-    model_configs.extend(
-        make_probe_configs(
-            seed,
-            encoder=x_cgm_jepa,
-            prefix="Pretrained_JEPA_Glu_Encoder",
-            output_type="patch",
-            patchify=True,
-            LR_C=LR_C,
-            LSVC_C=LSVC_C,
-            R_alpha=R_alpha,
-            RF_n_estimators=RF_n_estimators,
-            KNN_n_neighbors=KNN_n_neighbors,
-            include_knn=True,
-            exclude_knn=exclude_knn,
-        )
-    )
+    model_configs.extend(make_probe_configs(
+        seed, encoder=x_cgm_jepa, prefix="Pretrained_JEPA_Glu_Encoder",
+        output_type="patch", patchify=True,
+        LR_C=LR_C, LSVC_C=LSVC_C, R_alpha=R_alpha,
+        RF_n_estimators=RF_n_estimators, KNN_n_neighbors=KNN_n_neighbors,
+        include_knn=True, exclude_knn=exclude_knn, classifier_specs=active_specs,
+    ))
+    # Untrained CGM-JEPA
+    model_configs.extend(make_probe_configs(
+        seed, encoder=untrained_jepa, prefix="Untrained_JEPA_Encoder",
+        output_type="patch", patchify=True,
+        LR_C=LR_C, LSVC_C=LSVC_C, R_alpha=R_alpha,
+        RF_n_estimators=RF_n_estimators, KNN_n_neighbors=KNN_n_neighbors,
+        include_knn=True, exclude_knn=exclude_knn, classifier_specs=active_specs,
+    ))
+    # Untrained X-CGM-JEPA
+    model_configs.extend(make_probe_configs(
+        seed, encoder=untrained_x_jepa, prefix="Untrained_JEPA_Glu_Encoder",
+        output_type="patch", patchify=True,
+        LR_C=LR_C, LSVC_C=LSVC_C, R_alpha=R_alpha,
+        RF_n_estimators=RF_n_estimators, KNN_n_neighbors=KNN_n_neighbors,
+        include_knn=True, exclude_knn=exclude_knn, classifier_specs=active_specs,
+    ))
     # GluFormer
-    model_configs.extend(
-        make_probe_configs(
-            seed,
-            encoder=gluformer,
-            prefix="Pretrained_GluFormer",
-            output_type="token",
-            patchify=False,
-            LR_C=LR_C,
-            LSVC_C=LSVC_C,
-            R_alpha=R_alpha,
-            RF_n_estimators=RF_n_estimators,
-            KNN_n_neighbors=KNN_n_neighbors,
-            include_knn=True,
-            exclude_knn=exclude_knn,
-        )
-    )
+    model_configs.extend(make_probe_configs(
+        seed, encoder=gluformer, prefix="Pretrained_GluFormer",
+        output_type="token", patchify=False,
+        LR_C=LR_C, LSVC_C=LSVC_C, R_alpha=R_alpha,
+        RF_n_estimators=RF_n_estimators, KNN_n_neighbors=KNN_n_neighbors,
+        include_knn=True, exclude_knn=exclude_knn, classifier_specs=active_specs,
+    ))
 
-    # TS2Vec (added more baselines)
+    # TS2Vec (pickled full-model object; PyTorchModelHubMixin not applicable)
     from eval.baseline_utils.ts2vec_utils import load_pretrained_ts2vec, TS2VecEncoderWrapper
-    ts2vec_artifact = api.artifact(
-        f"hadamuhammad-unsw/cgm-ts2vec-pretrain/ts2vec:{cgm_ts2vec_version}",
-        type="model",
-    )
-    ts2vec_dir = ts2vec_artifact.download()
-    checkpoint_path = os.path.join(ts2vec_dir, "ts2vec.pkl")
-    ts2vec_meta = ts2vec_artifact.metadata or {}
+    checkpoint_path, ts2vec_meta = _resolve_local("ts2vec")
     output_dims = ts2vec_meta.get("output_dims", config.get("ts2vec_output_dims", 96))
     hidden_dims = ts2vec_meta.get("hidden_dims", config.get("ts2vec_hidden_dims", 64))
     depth = ts2vec_meta.get("depth", config.get("ts2vec_depth", 10))
@@ -327,6 +376,7 @@ def get_model_configs(config):
             KNN_n_neighbors=KNN_n_neighbors,
             include_knn=True,
             exclude_knn=exclude_knn,
+            classifier_specs=active_specs,
         )
     )
 
@@ -350,8 +400,9 @@ def get_model_configs(config):
                 include_knn=False,
                 exclude_knn=exclude_knn,
                 extra_common={
-                    "normalize_for_encoder": False,  # Mantis expects raw (unnormalized) time series
+                    "normalize_for_encoder": False,
                 },
+                classifier_specs=active_specs,
             )
         )
 
@@ -380,6 +431,7 @@ def get_model_configs(config):
                 include_knn=False,
                 exclude_knn=exclude_knn,
                 extra_common=moment_common_extra,
+                classifier_specs=active_specs,
             )
         )
         # Small
@@ -398,6 +450,7 @@ def get_model_configs(config):
                 include_knn=False,
                 exclude_knn=exclude_knn,
                 extra_common=moment_common_extra,
+                classifier_specs=active_specs,
             )
         )
 

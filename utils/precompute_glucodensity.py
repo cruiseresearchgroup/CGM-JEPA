@@ -25,6 +25,7 @@ def precompute_glucodensity_patches(
     output_path,
     patch_size=12,
     series_split_size=288,
+    stride=None,
     gluco_spatial_patch_size=8,
     gluco_gridsize=32,
     use_time_feature=False,
@@ -54,8 +55,9 @@ def precompute_glucodensity_patches(
         path_data=path_data,
         is_precompute_gluco=True,
         series_split_size=series_split_size,
+        stride=stride,
         patch_size=patch_size,
-        mask_ratio=0.0, 
+        mask_ratio=0.0,
         use_time_feature=use_time_feature,
     )
 
@@ -114,15 +116,16 @@ if __name__ == "__main__":
     parser.add_argument("--patch_size", type=int, default=12, help="CGM patch size")
     parser.add_argument("--series_split_size", type=int, default=288, help="Series split size")
     parser.add_argument("--gluco_spatial_patch_size", type=int, default=8, help="Spatial patch size")
-    parser.add_argument("--gluco_gridsize", type=int, default=32, help="KDE grid size") 
-    # NOTE: We use 32 size for precomputation
+    parser.add_argument("--gluco_gridsize", type=int, default=32, help="KDE grid size")
+    parser.add_argument("--stride", type=int, default=None, help="Sliding window stride (None=non-overlapping)")
     args = parser.parse_args()
-    
+
     precompute_glucodensity_patches(
         path_data=args.data_path,
         output_path=args.output_path,
         patch_size=args.patch_size,
         series_split_size=args.series_split_size,
+        stride=args.stride,
         gluco_spatial_patch_size=args.gluco_spatial_patch_size,
         gluco_gridsize=args.gluco_gridsize
     )

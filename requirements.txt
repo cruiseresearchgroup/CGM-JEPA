@@ -1,20 +1,34 @@
-torch
+# Pinned versions used to produce the paper's Tables 1-8.
+# The MOMENT / Mantis baselines have strict dependency pins (momentfm wants
+# huggingface-hub==0.24.0 and transformers==4.33.3 exactly), so the whole
+# upstream chain must be pinned to compatible versions for reproducibility.
+
+# Core
+torch>=2.0,<2.7
 torchaudio
 torchvision
+numpy==1.25.2
+scipy>=1.11
+pandas>=2.0
+scikit-learn>=1.3
+joblib>=1.3
 
-numpy
-scipy
-pandas
-scikit-learn
-joblib
+# Plotting
+matplotlib>=3.7
+seaborn>=0.12
 
-matplotlib
-seaborn
+# Baselines (foundation-model encoders). DO NOT relax these.
+mantis-tsfm==1.0.0
+momentfm==0.1.4
+transformers==4.33.3
+huggingface_hub==0.24.0
 
-mantis-tsfm
-momentfm
-transformers
-umap-learn
+# Misc
+umap-learn>=0.5
+tqdm>=4.65
+regex>=2023.0
+click>=8.0
 
-tqdm
-wandb==0.15.3
+# Experiment tracking (optional — downstream eval works without wandb; only
+# needed for fresh pretraining runs or to populate the live wandb project).
+wandb>=0.15

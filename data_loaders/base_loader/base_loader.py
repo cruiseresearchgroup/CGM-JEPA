@@ -25,7 +25,7 @@ class JSONDataLoader():
         min_glucose=None,
         max_glucose=None,
         num_bins=None,
-        output_type="patch"
+        output_type="patch",
     ):
         with open(path_data, 'r') as f:
             dataset = json.load(f)
@@ -164,7 +164,8 @@ class CSVDataLoader():
         path_data,
         batch_size=32,
         series_split_size=288, # daily data
-        patch_size=12, 
+        stride=None, # sliding window stride (None = non-overlapping)
+        patch_size=12,
         mask_ratio=0.25,
         use_time_feature=True, # whether we want to return the timestamp feature
         timeenc=1, # frequency based
@@ -195,20 +196,20 @@ class CSVDataLoader():
         df.sort_values(by=[subject_col, timestamp_col], inplace=True)
 
         self.series_split_size = series_split_size
+        self.stride = stride if stride is not None else series_split_size
         self.patch_size = patch_size
         self.mask_ratio = mask_ratio
         self.use_time_feature = use_time_feature
 
-        # pre-compute all valid samples (subject, split_idx) pairs
-        self.raw_samples = {}  # for storing all series for each subject without any series split size
+        # pre-compute all valid samples (subject, start_idx) pairs using sliding window
+        self.raw_samples = {}
         self.samples = []
         for subject in df[subject_col].unique():
             subject_df = df[df[subject_col] == subject]
             ts = subject_df[glucose_value_col].values
             self.raw_samples[subject] = ts
-            num_splits = len(ts) // series_split_size
-            for split_idx in range(num_splits):
-                self.samples.append((subject, split_idx))
+            for start_idx in range(0, len(ts) - series_split_size + 1, self.stride):
+                self.samples.append((subject, start_idx))
 
         self.df = df
         self.timestamp_col = timestamp_col

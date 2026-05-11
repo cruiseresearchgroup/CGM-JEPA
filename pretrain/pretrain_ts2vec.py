@@ -96,6 +96,7 @@ def main():
         "max_train_length": config.get("ts2vec_max_train_length", 3000),
         "n_epochs": config.get("ts2vec_n_epochs", 10),
         "n_iters": config.get("ts2vec_n_iters", None),
+        "temporal_unit": config.get("ts2vec_temporal_unit", 0),
     }
     
     # TS2Vec is known to have issues with MPS, so use CPU or CUDA
@@ -122,12 +123,13 @@ def main():
         patch_size=config["patch_size"],
         use_time_feature=config["use_time_feature"],
         mask_ratio=config["mask_ratio"],  # Not used for TS2Vec but needed for loader
-        gluco_cache_path=None  # Not using glucodensity for TS2Vec
+        gluco_cache_path=None,  # Not using glucodensity for TS2Vec
+        stride=config.get("stride"),
     )
     
     # Compute stats on the dataset (required for JEPALoader)
     print("\nComputing dataset statistics...")
-    loader.dataset.compute_stats(indices=None, normalize_x=True, normalize_y=False)
+    loader.dataset.compute_stats(indices=None, normalize_x=True) # hardcoded True for TS2Vec following the original implementation
     
     # Extract raw time series data
     print("\nExtracting raw time series...")
@@ -149,6 +151,12 @@ def main():
                 "n_samples": train_data.shape[0],
                 "n_timestamps": train_data.shape[1],
                 "n_features": train_data.shape[2],
+                "normalize_x": True,
+                "path_data": config["path_data"],
+                "random_seed": config["random_seed"],
+                "stride": config.get("stride"),
+                "series_split_size": 288,
+                "use_time_feature": config["use_time_feature"],
             }
         )
     
@@ -165,7 +173,8 @@ def main():
         device=ts2vec_device,
         lr=ts2vec_config["lr"],
         batch_size=ts2vec_config["batch_size"],
-        max_train_length=ts2vec_config["max_train_length"]
+        max_train_length=ts2vec_config["max_train_length"],
+        temporal_unit=ts2vec_config["temporal_unit"],
     )
     
     loss_log = model.fit(
@@ -195,11 +204,19 @@ def main():
         "lr": ts2vec_config["lr"],
         "batch_size": ts2vec_config["batch_size"],
         "max_train_length": ts2vec_config["max_train_length"],
+        "temporal_unit": ts2vec_config["temporal_unit"],
         "n_epochs": model.n_epochs,
         "n_samples": train_data.shape[0],
         "n_timestamps": train_data.shape[1],
         "n_features": train_data.shape[2],
         "final_loss": float(loss_log[-1]) if loss_log else None,
+        "normalize_x": True,
+        "path_data": config["path_data"],
+        "data_source": os.path.basename(config["path_data"]),
+        "random_seed": config["random_seed"],
+        "stride": config.get("stride"),
+        "series_split_size": 288,
+        "use_time_feature": config["use_time_feature"],
     }
     
     model.save(path_save)

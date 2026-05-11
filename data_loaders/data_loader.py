@@ -4,10 +4,10 @@ from .data_class import GluFormerDataLoader, JEPALoader, ClassificationDataLoade
 
 import numpy as np
 
-def get_jepa_loaders(path, batch_size, patch_size, use_time_feature, mask_ratio=0.9, gluco_cache_path=None):
+def get_jepa_loaders(path, batch_size, patch_size, use_time_feature, mask_ratio=0.9, gluco_cache_path=None, stride=None, series_split_size=288):
     """
     Get JEPA data loaders with optional pre-computed glucodensity patches.
-    
+
     Args:
         path: Path to CSV data file
         batch_size: Batch size
@@ -15,14 +15,17 @@ def get_jepa_loaders(path, batch_size, patch_size, use_time_feature, mask_ratio=
         use_time_feature: Whether to use time features
         mask_ratio: Mask ratio for JEPA
         gluco_cache_path: Path to pre-computed glucodensity patches (optional)
+        stride: Sliding-window stride over raw CGM series (None = non-overlapping = series_split_size)
+        series_split_size: Window length in raw samples (default 288 = 1 day at 5-min CGM)
     """
     jepa_loader = JEPALoader(
         path_data=path,
-        series_split_size=288,
+        series_split_size=series_split_size,
         patch_size=patch_size, # 1 hour
         mask_ratio=mask_ratio,
         use_time_feature=use_time_feature,
-        gluco_cache_path=gluco_cache_path
+        gluco_cache_path=gluco_cache_path,
+        stride=stride,
     )
 
     dataloader = DataLoader(
@@ -33,10 +36,11 @@ def get_jepa_loaders(path, batch_size, patch_size, use_time_feature, mask_ratio=
     
     return dataloader
 
-def get_gluformer_dataloader(path, batch_size):
+def get_gluformer_dataloader(path, batch_size, stride=None, series_split_size=288):
     gluformer_dataloader = GluFormerDataLoader(
         path_data=path,
-        series_split_size=288,
+        series_split_size=series_split_size,
+        stride=stride,
     )
 
     dataloader = DataLoader(
@@ -49,7 +53,7 @@ def get_gluformer_dataloader(path, batch_size):
 
 def get_eval_loaders(path, patch_size, task, extract_method, metabolic, seed,
     batch_size=32, global_mean=None, global_std=None, y_global_mean=None,
-    y_global_std=None, portion=1.0, output_type="patch", context_size=1
+    y_global_std=None, portion=1.0, output_type="patch", context_size=1,
 ):
     '''
         @brief: get the data used for evaluation
@@ -63,7 +67,7 @@ def get_eval_loaders(path, patch_size, task, extract_method, metabolic, seed,
         extract_method=extract_method,
         global_mean=global_mean,
         global_std=global_std,
-        output_type=output_type
+        output_type=output_type,
     )
     
     dataloader = DataLoader(

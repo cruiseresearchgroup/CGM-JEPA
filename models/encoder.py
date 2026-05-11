@@ -2,14 +2,26 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+from huggingface_hub import PyTorchModelHubMixin
+
 from utils.embed import DataEmbedding
 from utils.modules import *
 from utils.mask_utils import *
 
-class Encoder(nn.Module):
+class Encoder(
+    nn.Module,
+    PyTorchModelHubMixin,
+    repo_url="https://huggingface.co/CRUISEResearchGroup/CGM-JEPA",
+    pipeline_tag="feature-extraction",
+    license="mit",
+    tags=["cgm", "jepa", "self-supervised-learning", "time-series", "biosignal"],
+):
     '''
         @brief: Encode input into latent representations. Used for
-        both input and target encoder
+        both input and target encoder.
+
+        Loadable via ``Encoder.from_pretrained("CRUISEResearchGroup/CGM-JEPA",
+        subfolder="cgm_jepa")`` (or ``subfolder="x_cgm_jepa"``)
     '''
     def __init__(
         self,

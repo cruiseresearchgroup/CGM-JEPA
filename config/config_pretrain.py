@@ -3,7 +3,7 @@ from root import PROJECT_ROOT
 config = {    
 
     # Data used for pretraining (initial cohort only)
-    "path_data": f"{PROJECT_ROOT}/Dataset/cgm_initial_cohort.csv",
+    "path_data": f"{PROJECT_ROOT}/Dataset_Open/cgm_initial_cohort.csv",
 
     # Base path to save the output
     "path_save": f"{PROJECT_ROOT}/Output",
@@ -14,6 +14,8 @@ config = {
     
     # Loader
     "mask_ratio" : 0.25,
+    "normalize_x": False,  # toggle z-score normalization of CGM input (off = use raw values)
+    "stride": 288,  # sliding window stride (288=no overlap, 216=25%, 144=50% overlap)
     "gluco_loss_weight": 1.0,  # Weight for glucodensity loss (increase if gluco loss is too high)
     "patch_size": 12,
 

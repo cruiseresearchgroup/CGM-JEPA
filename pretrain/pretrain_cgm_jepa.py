@@ -50,7 +50,8 @@ if __name__ == "__main__":
         config["mask_ratio"]
     )
 
-    loader.dataset.compute_stats(normalize_x=True)
+    loader.dataset.compute_stats(normalize_x=config.get("normalize_x", False))
+    print(f"  Normalization enabled: {loader.dataset.normalize}")
 
     input_dim = len(loader.dataset[0][0][0])
 
@@ -142,7 +143,9 @@ if __name__ == "__main__":
             "warmup_ratio": config["warmup_ratio"],
             "clip_grad_max_norm": config["clip_grad_max_norm"],
             "seed": config["random_seed"],
-            "lr": config["lr"]
+            "lr": config["lr"],
+            "normalize_x": config.get("normalize_x", False),
+            "stride": config.get("stride"),
     }
 
     artifact = wandb.Artifact(
