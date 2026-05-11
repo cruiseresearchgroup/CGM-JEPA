@@ -11,9 +11,10 @@ Official implementation of **CGM-JEPA** and **X-CGM-JEPA** — self-supervised j
 
 ![X-CGM-JEPA Architecture](/assets/architecture.png)
 
-📄 **Paper:** [Link TBD]
-🤗 **Dataset:** [`<your-handle>/cgm-jepa-dataset`](https://huggingface.co/datasets/<your-handle>/cgm-jepa-dataset) on Hugging Face
-🤗 **Pretrained weights:** [`<your-handle>/cgm-jepa-weights`](https://huggingface.co/<your-handle>/cgm-jepa-weights) on Hugging Face
+📄 **Paper:** [arXiv:2605.00933](https://arxiv.org/abs/2605.00933)
+🤗 **Pretrained weights:** [`CRUISEResearchGroup/CGM-JEPA`](https://huggingface.co/CRUISEResearchGroup/CGM-JEPA) (model)
+🤗 **Downstream splits:** [`CRUISEResearchGroup/CGM-JEPA-Downstream`](https://huggingface.co/datasets/CRUISEResearchGroup/CGM-JEPA-Downstream) (dataset — labeled cohorts for paper Tables 1-6)
+🤗 **Pretraining corpus:** [`CRUISEResearchGroup/CGM-JEPA-Pretraining`](https://huggingface.co/datasets/CRUISEResearchGroup/CGM-JEPA-Pretraining) (dataset — raw CGM for SSL pretraining; only needed if you want to re-pretrain)
 
 ---
 
@@ -27,12 +28,17 @@ conda create -n cgm_jepa python=3.10
 conda activate cgm_jepa
 pip install -r requirements.txt
 
-# 2. Download dataset and pretrained weights from Hugging Face
-huggingface-cli download <your-handle>/cgm-jepa-dataset --repo-type dataset --local-dir Dataset_Open
-huggingface-cli download <your-handle>/cgm-jepa-weights --local-dir Output
+# 2. Download the pretrained weights and labeled downstream splits from Hugging Face
+huggingface-cli download CRUISEResearchGroup/CGM-JEPA --local-dir Output
+huggingface-cli download CRUISEResearchGroup/CGM-JEPA-Downstream --repo-type dataset --local-dir Dataset_Open
 
-# 3. Run the full evaluation (matches Tables 1–6 in the paper, ~1–2 hours)
+# 3. Run the full evaluation (matches paper Tables 1-6, ~15-20 min on Apple Silicon / single GPU)
 python scripts/run_all_eval.py
+```
+
+If you also want to re-pretrain from scratch, additionally pull the unlabeled corpus:
+```bash
+huggingface-cli download CRUISEResearchGroup/CGM-JEPA-Pretraining --repo-type dataset --local-dir Dataset_Open
 ```
 
 ---
@@ -62,16 +68,22 @@ python scripts/run_all_eval.py
 After the Hugging Face downloads, you also have:
 
 ```
-├── Dataset_Open/            # Preprocessed splits + pretraining CGM
-│   ├── train_split.json
-│   ├── validation_split.json
-│   ├── cgm_initial_cohort.csv
-│   └── gluco_cache_stride144.pkl   # Precomputed glucodensity patches
-└── Output/                  # Pretrained encoder checkpoints
-    ├── cgm_jepa.pt
-    ├── x_cgm_jepa.pt
-    ├── gluformer.pt
-    └── ts2vec.pkl
+├── Dataset_Open/                      # produced by `huggingface-cli download`
+│   ├── train_split.json               #   from CGM-JEPA-Downstream (initial cohort)
+│   ├── validation_split.json          #   from CGM-JEPA-Downstream (validation cohort)
+│   ├── train.parquet                  #   datasets-library friendly version of train_split
+│   ├── validation.parquet             #   datasets-library friendly version of validation_split
+│   └── cgm_initial_cohort.csv         #   from CGM-JEPA-Pretraining (only if you re-pretrain)
+└── Output/                            # produced by `huggingface-cli download` from CGM-JEPA
+    ├── cgm_jepa/
+    │   ├── model.safetensors          # PyTorchModelHubMixin format
+    │   └── config.json                # architecture hyperparameters
+    ├── x_cgm_jepa/
+    │   ├── model.safetensors
+    │   └── config.json
+    └── baselines/
+        ├── gluformer.pt
+        └── ts2vec.pkl
 ```
 
 ---
@@ -80,10 +92,19 @@ After the Hugging Face downloads, you also have:
 
 Two clinical cohorts (deduplicated; see paper Appendix for full details):
 
-| Cohort | Subjects | Modalities |
-|---|---|---|
-| **Initial** | 27 | In-clinic venous OGTT |
-| **Validation** | 17 | In-clinic venous OGTT, in-clinic CGM, two home-CGM windows |
+| Cohort | Subjects | Modalities | Lives in HF dataset |
+|---|---|---|---|
+| **Initial** | 27 | In-clinic venous OGTT | [CGM-JEPA-Downstream](https://huggingface.co/datasets/CRUISEResearchGroup/CGM-JEPA-Downstream) (train split) |
+| **Validation** | 17 | In-clinic venous OGTT, in-clinic CGM, two home-CGM windows | [CGM-JEPA-Downstream](https://huggingface.co/datasets/CRUISEResearchGroup/CGM-JEPA-Downstream) (validation split) |
+| **Pretraining corpus** | 228 (22 Stanford + 206 Colas) | Continuous home CGM | [CGM-JEPA-Pretraining](https://huggingface.co/datasets/CRUISEResearchGroup/CGM-JEPA-Pretraining) (CSV) |
+
+The two labeled cohorts can also be loaded directly as Hugging Face `datasets`:
+
+```python
+from datasets import load_dataset
+ds = load_dataset("CRUISEResearchGroup/CGM-JEPA-Downstream")
+# DatasetDict({train: Dataset({...,num_rows: 27}), validation: Dataset({...,num_rows: 17})})
+```
 
 **Sequence format:** 24-hour windows at 5-min sampling = 288 timesteps = 24 patches of size 12.
 
@@ -141,17 +162,35 @@ python -m pretrain.pretrain_ts2vec
 
 > **Note on reproducibility from re-pretraining.** Loading the released weights and running the downstream eval reproduces the paper's tables exactly. Re-running pretraining from scratch is expected to land within fold-to-fold noise of the paper's numbers, not bit-exact (due to MPS/CUDA float drift and non-deterministic kernels).
 
-### Optional — precompute Glucodensity patches
+### Required for X-CGM-JEPA — precompute Glucodensity patches
 
-The X-CGM-JEPA cross-view objective requires Glucodensity images. To avoid recomputing them every epoch:
+The X-CGM-JEPA cross-view objective needs Glucodensity images. Run this once after downloading the pretraining corpus (a few minutes on CPU):
 
 ```bash
 python -m utils.precompute_glucodensity \
   --data_path Dataset_Open/cgm_initial_cohort.csv \
-  --output_path Dataset_Open/gluco_cache_stride144.pkl
+  --output_path Dataset_Open/gluco_cache.pkl \
+  --stride 144
 ```
 
-The released dataset already includes `gluco_cache_stride144.pkl`, so this step is only needed if you re-preprocess the data.
+The cache (~54 MB) is **not** shipped on Hugging Face — it's derived deterministically from the CSV, so we leave the regeneration step to users to keep the dataset repo lean.
+
+---
+
+## Loading models programmatically
+
+Both pretrained CGM-JEPA encoders subclass `huggingface_hub.PyTorchModelHubMixin`, so a single `from_pretrained` call downloads weights + architecture hyperparameters and instantiates the model:
+
+```python
+from models.encoder import Encoder
+
+cgm_jepa   = Encoder.from_pretrained("CRUISEResearchGroup/CGM-JEPA", subfolder="cgm_jepa")
+x_cgm_jepa = Encoder.from_pretrained("CRUISEResearchGroup/CGM-JEPA", subfolder="x_cgm_jepa")
+```
+
+The `config.json` packaged alongside each `model.safetensors` carries `patch_size`, `embed_dim`, `nhead`, `num_layers`, etc. — no manual hyperparameter wiring is needed.
+
+For the GluFormer / TS2Vec baselines (stored under `Output/baselines/` after the download), see the model card on Hugging Face for the standalone-PyTorch loading example.
 
 ---
 
@@ -187,12 +226,11 @@ python -m eval.class_reg
 ## Citation
 
 ```bibtex
-% TBD — replace once the paper has a stable venue/arXiv link
-@misc{cgmjepa2026,
+@article{muhammad2026cgm,
   title   = {CGM-JEPA: Learning Consistent Continuous Glucose Monitor Representations via Predictive Self-Supervised Pretraining},
-  author  = {<author list>},
-  year    = {2026},
-  url     = {https://github.com/cruiseresearchgroup/CGM-JEPA}
+  author  = {Muhammad, Hada Melino and Li, Zechen and Salim, Flora and Metwally, Ahmed A},
+  journal = {arXiv preprint arXiv:2605.00933},
+  year    = {2026}
 }
 ```
 
