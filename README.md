@@ -61,7 +61,7 @@ huggingface-cli download CRUISEResearchGroup/CGM-JEPA-Pretraining --repo-type da
 ├── scripts/
 │   ├── preprocess_dataset.py  # Rebuild Dataset_Open/ from upstream sources
 │   └── run_all_eval.py        # Orchestrator: 3 settings × 2 endpoints
-├── utils/                   # Stats, RevIN, glucodensity precompute
+├── utils/                   # Stats, glucodensity precompute
 └── README.md
 ```
 
@@ -160,8 +160,6 @@ python -m pretrain.pretrain_gluformer
 python -m pretrain.pretrain_ts2vec
 ```
 
-> **Note on reproducibility from re-pretraining.** Loading the released weights and running the downstream eval reproduces the paper's tables exactly. Re-running pretraining from scratch is expected to land within fold-to-fold noise of the paper's numbers, not bit-exact (due to MPS/CUDA float drift and non-deterministic kernels).
-
 ### Required for X-CGM-JEPA — precompute Glucodensity patches
 
 The X-CGM-JEPA cross-view objective needs Glucodensity images. Run this once after downloading the pretraining corpus (a few minutes on CPU):
@@ -169,8 +167,7 @@ The X-CGM-JEPA cross-view objective needs Glucodensity images. Run this once aft
 ```bash
 python -m utils.precompute_glucodensity \
   --data_path Dataset_Open/cgm_initial_cohort.csv \
-  --output_path Dataset_Open/gluco_cache.pkl \
-  --stride 144
+  --output_path Dataset_Open/gluco_cache.pkl
 ```
 
 The cache (~54 MB) is **not** shipped on Hugging Face — it's derived deterministically from the CSV, so we leave the regeneration step to users to keep the dataset repo lean.
