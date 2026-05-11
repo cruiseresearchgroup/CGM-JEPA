@@ -32,7 +32,7 @@ pip install -r requirements.txt
 huggingface-cli download CRUISEResearchGroup/CGM-JEPA --local-dir Output
 huggingface-cli download CRUISEResearchGroup/CGM-JEPA-Downstream --repo-type dataset --local-dir Dataset_Open
 
-# 3. Run the full evaluation (matches paper Tables 1-6, ~15-20 min on Apple Silicon / single GPU)
+# 3. Run the full evaluation
 python scripts/run_all_eval.py
 ```
 
